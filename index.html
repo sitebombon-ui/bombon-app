@@ -858,7 +858,7 @@ h1.titulo.solo { margin: 0; }
 
 /* Versión del código del navegador. Se ve en la pantalla de entrada y en la
    cabecera: sirve para confirmar que el teléfono corre la última implementación. */
-var VERSION_APP = '2026-09-22.1';
+var VERSION_APP = '2026-09-22.2';
 
 /* ============================== ESTADO ============================== */
 
@@ -2113,7 +2113,7 @@ function celdaFoto(id, tag, obligatoria, extra) {
       '<span class="etq">' + esc(tag) + (tomada ? ' ✓' : noHay ? ' · no hay' : '') + '</span>' +
     '</div>' +
     '<button class="foto-btn" data-a="foto" data-f="' + esc(id) + '">' +
-      (tomada ? 'Reemplazar' : 'Tomar foto') + '</button>' +
+      (tomada ? 'Cambiar' : 'Elegir de galería') + '</button>' +
     (extra ? '<button class="foto-quitar" data-a="quitar-foto" data-f="' + esc(id) + '">Quitar</button>'
            : (tomada ? '' : '<button class="foto-quitar' + (noHay ? ' activa' : '') + '" data-a="foto-nohay" data-f="' + esc(id) + '">' +
                (noHay ? 'No hay ✓' : 'No hay') + '</button>')) +
@@ -2152,7 +2152,7 @@ function bloqueFotosExtra(titulo, sub) {
     (ids.length ? '<div class="fotos-grid">' +
       ids.map(function (id) { return celdaFoto(id, S.visita.fotos[id].tag || 'extra', false, true); }).join('') +
       '</div>' : '') +
-    '<button class="btn-contorno" data-a="agregar-foto">+ Agregar foto</button>' +
+    '<button class="btn-contorno" data-a="agregar-foto">+ Agregar desde galería</button>' +
   '</div>';
 }
 
@@ -2162,7 +2162,7 @@ function secFotos() {
   return '' +
   '<div class="tarjeta">' +
     '<div class="tarjeta-tit">Fotos de exhibición</div>' +
-    '<div class="tarjeta-sub">Toma las que apliquen en esta tienda. Si no hay qué fotografiar ' +
+    '<div class="tarjeta-sub">Toma las fotos con la cámara del teléfono y luego <strong>elígelas de la galería</strong> aquí (gasta menos memoria y no se cierra la app). Si no hay qué fotografiar ' +
       '(sin material POP, sin exhibición, sin esa categoría), toca <strong>No hay</strong> en ese cuadrito. ' +
       'Las fotos no bloquean el cierre.</div>' +
     celdas +
