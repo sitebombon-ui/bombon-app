@@ -841,7 +841,7 @@ h1.titulo.solo { margin: 0; }
   <div id="cargando"><i></i></div>
 
   <!-- Entrada de cámara oculta: la usa la sección de fotos -->
-  <input id="camara" type="file" accept="image/*" capture="environment" style="display:none">
+  <input id="camara" type="file" accept="image/*" style="display:none">
 
   <!-- Entrada de archivo oculta: la usa la importación de cartera -->
   <input id="archivo-csv" type="file" accept=".csv,.tsv,.txt,text/csv,text/plain" style="display:none">
@@ -858,7 +858,7 @@ h1.titulo.solo { margin: 0; }
 
 /* Versión del código del navegador. Se ve en la pantalla de entrada y en la
    cabecera: sirve para confirmar que el teléfono corre la última implementación. */
-var VERSION_APP = '2026-09-21.1';
+var VERSION_APP = '2026-09-22.1';
 
 /* ============================== ESTADO ============================== */
 
@@ -1016,7 +1016,7 @@ var API_URL = (typeof window !== 'undefined' && window.EBD_API_URL) || '';
 var DENTRO_DE_APPS_SCRIPT = !!(typeof google !== 'undefined' && google.script && google.script.run);
 
 function errorConexion_(mensaje) {
-  var e = new Error(mensaje || 'Sin conexión con el servidor.');
+  var e = new Error(mensaje || (navigator.onLine ? 'la petición fue bloqueada o no llegó (CORS/red).' : 'Sin conexión con el servidor.'));
   e.sinConexion = true;
   return e;
 }
@@ -1029,9 +1029,28 @@ function procesarRespuesta_(r, resolve, reject) {
   reject(err(r.error || 'Error desconocido.'));
 }
 
+/* Con muchos usuarios a la vez Apps Script puede responder lento o con
+   errores pasajeros ("Servicio no disponible", "Lock timeout", cortes de
+   red). Se reintenta hasta 3 veces con espera creciente antes de rendirse. */
+var REINTENTABLE_ = /no disponible|unavailable|timeout|tiempo|lock|exceeded|too many|internal|service|502|503|504/i;
+
 function api(funcion) {
   var args = Array.prototype.slice.call(arguments, 1);
+  var intento = 0;
+  function unaVez() {
+    return apiUnaVez_(funcion, args).catch(function (e) {
+      var pasajero = e && (e.sinConexion && navigator.onLine || (e.delServidor && REINTENTABLE_.test(e.message)));
+      if (pasajero && intento < 3) {
+        intento++;
+        return new Promise(function (r) { setTimeout(r, 1500 * intento); }).then(unaVez);
+      }
+      throw e;
+    });
+  }
+  return unaVez();
+}
 
+function apiUnaVez_(funcion, args) {
   if (DENTRO_DE_APPS_SCRIPT) {
     return new Promise(function (resolve, reject) {
       var enviar = google.script.run
@@ -1060,13 +1079,13 @@ function api(funcion) {
     signal: ctrl ? ctrl.signal : undefined
   })
     .then(function (resp) {
-      if (!resp.ok) throw errorConexion_('El servidor respondió ' + resp.status + '.');
+      if (!resp.ok) throw errorConexion_('el servidor respondió ' + resp.status + '.');
       return resp.text();
     })
     .then(function (texto) {
       var r;
       try { r = JSON.parse(texto); }
-      catch (e) { throw errorConexion_('Respuesta inesperada del servidor. Revisa la dirección en pwa/config.js y que la implementación sea para "Cualquier usuario".'); }
+      catch (e) { throw errorConexion_('el servidor devolvió una página en vez de datos (implementación vieja o acceso no público).'); }
       return new Promise(function (resolve, reject) { procesarRespuesta_(r, resolve, reject); });
     })
     .catch(function (e) {
@@ -1153,7 +1172,18 @@ function iniciar() {
       });
     })
     .then(function (d) { aplicarSesion(d); recuperarVisitaEnCurso(); return cargarVista(); })
-    .catch(function (e) { if (!(e && e.sinConexion)) cerrarSesionLocal(); })
+    .catch(function (e) {
+      // Solo se cierra la sesión si el servidor dijo que venció. Cualquier
+      // otra falla (servidor ocupado, red mala) arranca con la copia guardada.
+      var vencida = e && e.delServidor && /venció|SIN_SESION/i.test(e.message);
+      if (!vencida && _sesionRespaldo && _sesionRespaldo.token === token) {
+        try { aplicarSesion(_sesionRespaldo); recuperarVisitaEnCurso(); } catch (e2) {}
+        if (_rutaRespaldo && _rutaRespaldo.fecha === fechaISOLocal()) S.rutaDatos = _rutaRespaldo;
+        setTimeout(function () { aviso('El servidor no respondió; trabajas con la copia guardada. Se reintenta solo.'); }, 500);
+      } else if (vencida || !_sesionRespaldo) {
+        cerrarSesionLocal();
+      }
+    })
     .then(function () {
       cargando(false);
       render();
@@ -1224,8 +1254,13 @@ function recuperarVisitaEnCurso() {
   S.vista = 'visita';
   arrancarCronometro();
   mantenerPantalla();
+  var fotoPend = '';
+  try { fotoPend = sessionStorage.getItem('ebd_foto_pendiente') || ''; sessionStorage.removeItem('ebd_foto_pendiente'); } catch (e) {}
+  if (fotoPend) S.seccion = 'fot';
   setTimeout(function () {
-    aviso('Recuperamos la visita de ' + (S.visita.clienteNombre || 'tu cliente') + ' tal como la dejaste.');
+    aviso(fotoPend
+      ? 'La app se cerró al tomar la foto. Tu visita está intacta: vuelve a tomarla o elígela de la galería.'
+      : 'Recuperamos la visita de ' + (S.visita.clienteNombre || 'tu cliente') + ' tal como la dejaste.');
   }, 600);
 }
 
@@ -1412,6 +1447,49 @@ window.addEventListener('online', function () {
 });
 window.addEventListener('offline', function () { S.enLinea = false; render(); });
 
+/* ===================== RED DE SEGURIDAD ANTE ERRORES ===================== */
+/* Si algo falla al dibujar, la pantalla no se queda en blanco: se muestra
+   un aviso con botón para recargar. Lo capturado sigue guardado en el
+   teléfono. El error se manda al Log del Sheet cuando hay señal. */
+var _ultimoErrorReportado = '';
+function reportarError(origen, e) {
+  var texto = origen + ': ' + (e && e.message ? e.message : String(e)) + (e && e.stack ? ' | ' + String(e.stack).split('\n').slice(0, 3).join(' ') : '');
+  texto = texto.slice(0, 600);
+  console.error(texto);
+  if (texto === _ultimoErrorReportado) return;
+  _ultimoErrorReportado = texto;
+  try {
+    if (S.token && navigator.onLine) apiUnaVez_('apiReportarError', [S.token, 'v' + VERSION_APP + ' · ' + S.vista + ' · ' + texto]).catch(function () {});
+  } catch (e2) {}
+}
+
+function pantallaError(e) {
+  var app = document.getElementById('app');
+  if (!app) return;
+  app.innerHTML =
+    '<div class="login-fondo"><div class="login-caja" style="text-align:center">' +
+      '<div class="marca" style="justify-content:center"><div class="marca-logo">B</div></div>' +
+      '<div class="tarjeta-login">' +
+        '<div class="t-titulo">Algo salió mal en la pantalla</div>' +
+        '<div class="t-sub" style="margin:8px 0 14px">Lo que capturaste está guardado en el teléfono. Recarga para continuar.</div>' +
+        '<div class="error-login" style="text-align:left;font-size:11px">' + esc((e && e.message) || String(e)) + '</div>' +
+        '<button class="btn-primario" type="button" onclick="location.reload()">Recargar la app</button>' +
+      '</div>' +
+      '<div class="pie-login">v' + VERSION_APP + '</div>' +
+    '</div></div>';
+}
+
+window.addEventListener('error', function (ev) {
+  reportarError('error', ev.error || ev.message);
+  var app = document.getElementById('app');
+  if (app && !app.innerHTML.trim()) pantallaError(ev.error || ev.message);
+});
+window.addEventListener('unhandledrejection', function (ev) {
+  var r = ev.reason;
+  if (r && (r.sinConexion || r.delServidor)) return;   // esos ya se muestran como aviso
+  reportarError('promesa', r);
+});
+
 /* ============================== INICIO ============================== */
 
 window.addEventListener('DOMContentLoaded', iniciar);
@@ -1429,12 +1507,19 @@ window.addEventListener('DOMContentLoaded', iniciar);
    =================================================================== */
 
 function render() {
-  desmontarMapa();          // Leaflet necesita soltar el contenedor antes de que lo reemplacemos
-  document.getElementById('app').innerHTML =
-    (S.token ? pantallaApp() : pantallaLogin()) + (S.token ? vistaModal() : '');
-  if (S.visita && S.fase === 'form') arrancarCronometro(); else pararCronometro();
-  montarMapa();
-  cargarMiniaturas();
+  try {
+    desmontarMapa();          // Leaflet necesita soltar el contenedor antes de que lo reemplacemos
+    document.getElementById('app').innerHTML =
+      (S.token ? pantallaApp() : pantallaLogin()) + (S.token ? vistaModal() : '');
+    if (S.visita && S.fase === 'form') arrancarCronometro(); else pararCronometro();
+    montarMapa();
+    cargarMiniaturas();
+  } catch (e) {
+    // La visita en curso se guarda antes de mostrar el aviso: nada se pierde.
+    try { if (S.visita && S.fase === 'form') guardarVisitaEnCurso(true); } catch (e2) {}
+    reportarError('render', e);
+    pantallaError(e);
+  }
 }
 
 /* ========================== INICIO DE SESIÓN ========================== */
@@ -4893,6 +4978,12 @@ function entrar() {
           _sesionRespaldo = { token: guardado.sesion.token, perfil: guardado.sesion.perfil, catalogos: guardado.sesion.catalogos, config: guardado.sesion.config };
           return guardado.sesion;
         }
+        // Con internet y aun así "sin conexión": el servidor no respondió como se esperaba.
+        if (navigator.onLine) {
+          throw new Error('No se pudo hablar con el servidor: ' + e.message +
+            ' Revisa que Apps Script tenga la versión ' + VERSION_APP + ' implementada (abre la URL /exec?ping=1: debe responder "doPost": true) ' +
+            'y que config.js apunte a esa misma URL.');
+        }
         throw new Error('Sin conexión. Para entrar sin señal, este usuario debe haber entrado antes desde este teléfono con señal.');
       });
     });
@@ -5216,6 +5307,9 @@ function agregarFotoExtra() {
 function pedirFoto(fotoId, etiqueta) {
   _fotoPendiente = fotoId;
   _fotoEtiqueta = etiqueta || '';
+  // Al abrir la cámara, Android puede cerrar la app para hacerle espacio.
+  // Se guarda todo antes, y se anota qué cuadrito se estaba llenando.
+  try { guardarVisitaEnCurso(true); sessionStorage.setItem('ebd_foto_pendiente', fotoId + '|' + _fotoEtiqueta); } catch (e) {}
   var input = document.getElementById('camara');
   input.value = '';
   input.click();
@@ -5233,12 +5327,14 @@ document.getElementById('camara').addEventListener('change', function (ev) {
       var previa = S.visita.fotos[fotoId] || {};
       S.visita.fotos[fotoId] = { dataUrl: r.dataUrl, thumb: r.thumb, tomadaEn: selloLocal(), tag: _fotoEtiqueta || previa.tag || '' };
       guardarVisitaEnCurso(true);
+      try { sessionStorage.removeItem('ebd_foto_pendiente'); } catch (e) {}
       cargando(false);
       render();
     })
     .catch(function (e) {
       cargando(false);
-      aviso('No se pudo procesar la foto: ' + e.message, true);
+      reportarError('foto', e);
+      aviso('No se pudo procesar la foto: ' + e.message + '. Intenta con una foto de la galería.', true);
     });
 });
 

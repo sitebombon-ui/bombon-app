@@ -1,7 +1,7 @@
 /* El Bombón Dorado · service worker
    Guarda la app en el teléfono para que abra sin señal. Los datos siguen
    yendo a Apps Script (esas llamadas no se guardan aquí). */
-var VERSION = '2026-09-21.1';
+var VERSION = '2026-09-22.1';
 var CACHE = 'ebd-' + VERSION;
 var ARCHIVOS = ['./', './index.html', './config.js', './manifest.webmanifest', './icono-192.png', './icono-512.png'];
 
